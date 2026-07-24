@@ -56,33 +56,43 @@ def node_embed_jd(state: RankingState) -> RankingState:
 
 def node_retrieve_candidates(state: RankingState) -> RankingState:
     """Node 3: Semantic search in ChromaDB for top candidates."""
+    all_candidates = []
+    try:
+        if os.path.exists("data/candidates.json"):
+            with open("data/candidates.json") as f:
+                all_candidates = json.load(f)
+    except Exception:
+        all_candidates = []
+
     try:
         engine = get_engine()
-
-        # Check if candidates are indexed
         count = engine.get_collection_count()
-        if count == 0:
+        if count == 0 and os.path.exists("data/candidates.json"):
             print("No candidates indexed. Indexing now...")
             engine.index_candidates("data/candidates.json")
 
-        results = engine.search_candidates(state["jd_text"], top_k=state.get("top_k", 20))
-
-        # Load full candidate profiles
-        with open("data/candidates.json") as f:
-            all_candidates = json.load(f)
-
+        results = engine.search_candidates(state.get("jd_text", ""), top_k=state.get("top_k", 20))
         return {**state, "semantic_results": results, "all_candidates": all_candidates}
     except Exception as e:
-        return {**state, "error": f"Retrieval failed: {e}"}
+        print(f"Retrieval warning: {e}")
+        return {**state, "semantic_results": [], "all_candidates": all_candidates}
 
 
 def node_score_candidates(state: RankingState) -> RankingState:
     """Node 4: Multi-signal scoring of retrieved candidates."""
     try:
+        candidates = state.get("all_candidates") or []
+        if not candidates and os.path.exists("data/candidates.json"):
+            with open("data/candidates.json") as f:
+                candidates = json.load(f)
+
+        parsed_jd = state.get("parsed_jd") or {}
+        semantic_results = state.get("semantic_results") or []
+
         scored = score_all_candidates(
-            state["all_candidates"],
-            state["parsed_jd"],
-            state["semantic_results"]
+            candidates,
+            parsed_jd,
+            semantic_results
         )
         return {**state, "scored_candidates": scored}
     except Exception as e:

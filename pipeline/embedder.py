@@ -1,17 +1,22 @@
 """
 pipeline/embedder.py
-Embeds candidate profiles and JD into vectors using sentence-transformers.
+Embeds candidate profiles and JD into vectors using serverless APIs with deterministic fallbacks.
 Stores and retrieves from ChromaDB.
 """
 
 import os
 import json
+import hashlib
+import requests
 from typing import List, Dict, Any
 
 # Lazy imports to avoid errors if not installed yet
 def _get_sentence_transformer():
-    from sentence_transformers import SentenceTransformer
-    return SentenceTransformer("all-MiniLM-L6-v2")
+    try:
+        from sentence_transformers import SentenceTransformer
+        return SentenceTransformer("all-MiniLM-L6-v2")
+    except Exception:
+        return None
 
 def _get_chroma():
     import chromadb
@@ -20,10 +25,25 @@ def _get_chroma():
 CHROMA_PATH = "data/chroma_db"
 
 
+def _fallback_vector(text: str, dim: int = 384) -> List[float]:
+    """Fast deterministic feature vector based on word hashes (used if remote API & local model fail)."""
+    vec = [0.0] * dim
+    words = text.lower().split()
+    if not words:
+        return vec
+    for w in words:
+        h = int(hashlib.md5(w.encode('utf-8')).hexdigest(), 16)
+        idx = h % dim
+        vec[idx] += 1.0
+    norm = sum(x*x for x in vec) ** 0.5
+    if norm > 0:
+        vec = [x / norm for x in vec]
+    return vec
+
+
 def build_candidate_text(candidate: Dict[str, Any]) -> str:
     """Convert a candidate profile dict into a rich text string for embedding."""
     parts = []
-
     parts.append(f"Name: {candidate.get('name', '')}")
     parts.append(f"Summary: {candidate.get('summary', '')}")
     parts.append(f"Experience: {candidate.get('years_experience', 0)} years")
@@ -95,46 +115,43 @@ class EmbeddingEngine:
 
     def _query_hf_api(self, texts: List[str]) -> List[List[float]]:
         """Queries the Hugging Face Serverless Inference API for embeddings."""
-        api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        urls = [
+            "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction",
+            "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        ]
         headers = {}
-        # Render has internet access and can query the public API. Optional HF_TOKEN can be used
         token = os.getenv("HF_TOKEN")
         if token:
             headers["Authorization"] = f"Bearer {token}"
         
-        try:
-            print(f"Requesting embeddings from Hugging Face Serverless API (batch size: {len(texts)})...")
-            response = requests.post(
-                api_url,
-                headers=headers,
-                json={"inputs": texts, "options": {"wait_for_model": True}},
-                timeout=25
-            )
-            if response.status_code == 200:
-                result = response.json()
-                if isinstance(result, list) and len(result) > 0:
-                    # Check if result is 3D: [batch, seq_len, dim] -> perform mean pooling
-                    if isinstance(result[0], list) and len(result[0]) > 0 and isinstance(result[0][0], list):
-                        pooled_results = []
-                        for doc_tokens in result:
-                            num_tokens = len(doc_tokens)
-                            dim = len(doc_tokens[0])
-                            mean_vector = [0.0] * dim
-                            for token_vector in doc_tokens:
-                                for idx, val in enumerate(token_vector):
-                                    mean_vector[idx] += val
-                            mean_vector = [val / num_tokens for val in mean_vector]
+        for api_url in urls:
+            try:
+                response = requests.post(
+                    api_url,
+                    headers=headers,
+                    json={"inputs": texts, "options": {"wait_for_model": True}},
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    result = response.json()
+                    if isinstance(result, list) and len(result) > 0:
+                        # If returned as 3D tensor [batch, seq_len, dim], mean-pool
+                        if isinstance(result[0], list) and len(result[0]) > 0 and isinstance(result[0][0], list):
+                            pooled_results = []
+                            for doc_tokens in result:
+                                num_tokens = len(doc_tokens)
+                                dim = len(doc_tokens[0])
+                                mean_vector = [0.0] * dim
+                                for token_vector in doc_tokens:
+                                    for idx, val in enumerate(token_vector):
+                                        mean_vector[idx] += val
+                                mean_vector = [val / num_tokens for val in mean_vector]
                             pooled_results.append(mean_vector)
-                        return pooled_results
-                    return result
-            print(f"HF Inference API returned non-200: {response.status_code}. Response: {response.text[:200]}")
-        except Exception as e:
-            print(f"Error calling HF Inference API: {e}")
+                            return pooled_results
+                        return result
+            except Exception as e:
+                print(f"HF API endpoint {api_url} failed: {e}")
         return []
-
-    def _load_model(self):
-        # We don't pre-load model at startup to save memory.
-        pass
 
     def _load_chroma(self):
         if self.chroma_client is None:
@@ -148,30 +165,47 @@ class EmbeddingEngine:
 
     def embed_text(self, text: str) -> List[float]:
         """Embed a single text string."""
-        return self.embed_texts([text])[0]
+        res = self.embed_texts([text])
+        if res and len(res) > 0:
+            return res[0]
+        return _fallback_vector(text)
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
-        """Embed multiple texts."""
+        """Embed multiple texts with multi-tier fallback."""
+        if not texts:
+            return []
+
+        # 1. Try Serverless HF API
         embeddings = self._query_hf_api(texts)
         if embeddings and len(embeddings) == len(texts):
             return embeddings
-            
-        print("Falling back to local SentenceTransformer model...")
-        if self.model is None:
-            self.model = _get_sentence_transformer()
-        return self.model.encode(texts).tolist()
+
+        # 2. Try Local Model if installed
+        try:
+            if self.model is None:
+                self.model = _get_sentence_transformer()
+            if self.model is not None:
+                return self.model.encode(texts).tolist()
+        except Exception as e:
+            print(f"Local SentenceTransformer embedding failed: {e}")
+
+        # 3. Deterministic hash fallback (Guaranteed to work 100%)
+        print("Using deterministic word-hash vector fallback for embeddings.")
+        return [_fallback_vector(t) for t in texts]
 
     def index_candidates(self, candidates_path: str = "data/candidates.json"):
         """Load candidates from JSON and store in ChromaDB."""
-        self._load_model()
         self._load_chroma()
+
+        if not os.path.exists(candidates_path):
+            print(f"Warning: {candidates_path} not found.")
+            return
 
         with open(candidates_path) as f:
             candidates = json.load(f)
 
         print(f"Indexing {len(candidates)} candidates...")
 
-        # Process in batches
         batch_size = 20
         for i in range(0, len(candidates), batch_size):
             batch = candidates[i:i + batch_size]
@@ -180,7 +214,7 @@ class EmbeddingEngine:
             ids = [c["id"] for c in batch]
             metadatas = [
                 {
-                    "name": c["name"],
+                    "name": c.get("name", ""),
                     "skills": ",".join(c.get("skills", [])),
                     "years_experience": c.get("years_experience", 0),
                     "seniority": c.get("seniority", ""),
@@ -205,7 +239,6 @@ class EmbeddingEngine:
 
     def search_candidates(self, jd_text: str, top_k: int = 20) -> List[Dict]:
         """Semantic search: find top-k candidates matching the JD."""
-        self._load_model()
         self._load_chroma()
 
         jd_embedding = self.embed_text(jd_text)
@@ -217,14 +250,16 @@ class EmbeddingEngine:
         )
 
         candidates_out = []
-        for i in range(len(results["ids"][0])):
-            candidates_out.append({
-                "id": results["ids"][0][i],
-                "document": results["documents"][0][i],
-                "metadata": results["metadatas"][0][i],
-                "semantic_distance": results["distances"][0][i],
-                "semantic_score": round(1 - results["distances"][0][i], 4)
-            })
+        if results and results.get("ids") and len(results["ids"]) > 0:
+            for i in range(len(results["ids"][0])):
+                dist = results["distances"][0][i] if results.get("distances") else 0.5
+                candidates_out.append({
+                    "id": results["ids"][0][i],
+                    "document": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "semantic_distance": dist,
+                    "semantic_score": round(max(0.0, 1.0 - dist), 4)
+                })
 
         return candidates_out
 
@@ -247,8 +282,3 @@ if __name__ == "__main__":
     engine = get_engine()
     engine.index_candidates()
     print(f"Total indexed: {engine.get_collection_count()}")
-
-    test_jd_text = "Senior Python ML Engineer with LangChain, FastAPI, Docker experience. 4+ years."
-    results = engine.search_candidates(test_jd_text, top_k=5)
-    for r in results:
-        print(f"  {r['id']} | {r['metadata']['name']} | semantic_score={r['semantic_score']}")
