@@ -889,7 +889,7 @@ if not st.session_state["entered"]:
     
     col_btn_1, col_btn_2, col_btn_3 = st.columns([1, 2, 1])
     with col_btn_2:
-        if st.button("Launch Recruiter Workspace ⚡", width='stretch', type="primary"):
+        if st.button("Launch Recruiter Workspace ⚡", use_container_width=True, type="primary"):
             st.session_state["entered"] = True
             st.rerun()
     st.stop()
@@ -1031,7 +1031,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown('<div style="font-size:0.75rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:0.6rem">🔄 Data Actions</div>', unsafe_allow_html=True)
-    if st.button("Re-index Candidates", width='stretch'):
+    if st.button("Re-index Candidates", use_container_width=True):
         try:
             requests.post(f"{API_URL}/index", json={"candidates_path": "data/candidates.json"}, timeout=5)
             st.success("Indexing started in background!")
@@ -1039,7 +1039,7 @@ with st.sidebar:
             st.error(f"Failed: {e}")
 
     # Return to splash screen button
-    if st.button("↩️ Return to Intro", width='stretch'):
+    if st.button("↩️ Return to Intro", use_container_width=True):
         st.session_state["entered"] = False
         st.rerun()
 
@@ -1125,7 +1125,7 @@ You will build AI-powered backend services, collaborate with the ML team, and ma
         label_visibility="collapsed"
     )
 
-    run_clicked = st.button("🚀  Find Best Candidates", type="primary", width='content')
+    run_clicked = st.button("🚀  Find Best Candidates", type="primary", use_container_width=False)
 
 with col_templates:
     st.markdown(clean_html("""
@@ -1143,7 +1143,7 @@ with col_templates:
     }
 
     for tname, tjd in templates.items():
-        if st.button(tname, width='stretch'):
+        if st.button(tname, use_container_width=True):
             st.session_state["jd_text"] = tjd
             st.rerun()
 
@@ -1499,7 +1499,7 @@ if "last_result" in st.session_state:
                 data=json.dumps(data, indent=2),
                 file_name="recruitmind_results.json",
                 mime="application/json",
-                width='stretch'
+                use_container_width=True
             )
         with exp2:
             csv_rows = []
@@ -1530,7 +1530,7 @@ if "last_result" in st.session_state:
                 data=csv_df.to_csv(index=False),
                 file_name="recruitmind_shortlist.csv",
                 mime="text/csv",
-                width='stretch'
+                use_container_width=True
             )
 
 # ── Candidate Comparison Section ─────────────────────────────────────────────
@@ -1557,7 +1557,7 @@ if "last_result" in st.session_state:
         if len(selected_labels) >= 2:
             selected_ids = [candidate_options[label] for label in selected_labels]
             jd_for_compare = st.session_state.get("last_jd", "")
-            if st.button("🔍 Compare Selected Candidates", width='stretch'):
+            if st.button("🔍 Compare Selected Candidates", use_container_width=True):
                 try:
                     compare_response = requests.post(
                         f"{API_URL}/compare",
@@ -1633,7 +1633,7 @@ bias_jd = st.text_area(
     key="bias_jd_input",
     label_visibility="collapsed"
 )
-if st.button("🔎 Check for Bias", width='content'):
+if st.button("🔎 Check for Bias", use_container_width=False):
     if bias_jd.strip():
         try:
             bias_response = requests.post(
