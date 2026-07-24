@@ -1,7 +1,11 @@
 # RecruitMind AI — Python Dependencies
 # Install: pip install -r requirements.txt
 
+# ── CPU-only PyTorch (avoids 1.5GB CUDA packages on Render free tier) ──────────
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 # Core ML & Embeddings
+torch==2.1.2+cpu
 sentence-transformers>=3.0.1
 chromadb>=0.5.3
 
@@ -18,7 +22,7 @@ uvicorn[standard]>=0.30.6
 pydantic>=2.9.0
 
 # Frontend
-streamlit==1.39.0
+streamlit>=1.39.0
 pandas>=2.2.3
 
 # Utilities
