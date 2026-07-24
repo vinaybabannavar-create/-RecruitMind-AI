@@ -93,11 +93,48 @@ class EmbeddingEngine:
         self.chroma_client = None
         self.collection = None
 
+    def _query_hf_api(self, texts: List[str]) -> List[List[float]]:
+        """Queries the Hugging Face Serverless Inference API for embeddings."""
+        api_url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/all-MiniLM-L6-v2"
+        headers = {}
+        # Render has internet access and can query the public API. Optional HF_TOKEN can be used
+        token = os.getenv("HF_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        
+        try:
+            print(f"Requesting embeddings from Hugging Face Serverless API (batch size: {len(texts)})...")
+            response = requests.post(
+                api_url,
+                headers=headers,
+                json={"inputs": texts, "options": {"wait_for_model": True}},
+                timeout=25
+            )
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, list) and len(result) > 0:
+                    # Check if result is 3D: [batch, seq_len, dim] -> perform mean pooling
+                    if isinstance(result[0], list) and len(result[0]) > 0 and isinstance(result[0][0], list):
+                        pooled_results = []
+                        for doc_tokens in result:
+                            num_tokens = len(doc_tokens)
+                            dim = len(doc_tokens[0])
+                            mean_vector = [0.0] * dim
+                            for token_vector in doc_tokens:
+                                for idx, val in enumerate(token_vector):
+                                    mean_vector[idx] += val
+                            mean_vector = [val / num_tokens for val in mean_vector]
+                            pooled_results.append(mean_vector)
+                        return pooled_results
+                    return result
+            print(f"HF Inference API returned non-200: {response.status_code}. Response: {response.text[:200]}")
+        except Exception as e:
+            print(f"Error calling HF Inference API: {e}")
+        return []
+
     def _load_model(self):
-        if self.model is None:
-            print("Loading embedding model (all-MiniLM-L6-v2)...")
-            self.model = _get_sentence_transformer()
-            print("Model loaded.")
+        # We don't pre-load model at startup to save memory.
+        pass
 
     def _load_chroma(self):
         if self.chroma_client is None:
@@ -111,12 +148,17 @@ class EmbeddingEngine:
 
     def embed_text(self, text: str) -> List[float]:
         """Embed a single text string."""
-        self._load_model()
-        return self.model.encode(text).tolist()
+        return self.embed_texts([text])[0]
 
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Embed multiple texts."""
-        self._load_model()
+        embeddings = self._query_hf_api(texts)
+        if embeddings and len(embeddings) == len(texts):
+            return embeddings
+            
+        print("Falling back to local SentenceTransformer model...")
+        if self.model is None:
+            self.model = _get_sentence_transformer()
         return self.model.encode(texts).tolist()
 
     def index_candidates(self, candidates_path: str = "data/candidates.json"):
