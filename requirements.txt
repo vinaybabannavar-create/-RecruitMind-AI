@@ -16,7 +16,7 @@ uvicorn[standard]>=0.30.6
 pydantic>=2.9.0
 
 # Frontend
-streamlit>=1.39.0
+streamlit==1.39.0
 pandas>=2.2.3
 
 # Utilities
